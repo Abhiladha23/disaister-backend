@@ -1,19 +1,17 @@
 from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
-from models import Base, Incident, SOS, Action
+from models import Base, Incident, SOS, Action, MonitoredLocation
 from gemini_service import classify_incident
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import math
 
-# Create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="disAIster Backend")
 
-# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,10 +20,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# -----------------------------
-# DATABASE DEPENDENCY
-# -----------------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -34,9 +28,6 @@ def get_db():
         db.close()
 
 
-# -----------------------------
-# REQUEST SCHEMAS
-# -----------------------------
 class IncidentRequest(BaseModel):
     message: str
     lat: float
@@ -56,20 +47,19 @@ class ActionRequest(BaseModel):
     lng: float
 
 
-# -----------------------------
-# ROOT
-# -----------------------------
+class MonitorRequest(BaseModel):
+    name: str
+    lat: float
+    lng: float
+
+
 @app.get("/")
 def root():
-    return {"status": "Backend running successfully"}
+    return {"status": "Backend running"}
 
 
-# -----------------------------
-# AI ANALYSIS
-# -----------------------------
 @app.post("/analyze")
 def analyze_incident(data: IncidentRequest, db: Session = Depends(get_db)):
-
     ai_result = classify_incident(data.message)
 
     incident = Incident(
@@ -92,83 +82,70 @@ def analyze_incident(data: IncidentRequest, db: Session = Depends(get_db)):
     return ai_result
 
 
-# -----------------------------
-# GET RECENT INCIDENTS (Last 24 Hours)
-# -----------------------------
 @app.get("/incidents")
 def get_incidents(db: Session = Depends(get_db)):
-
-    last_24_hours = datetime.utcnow() - timedelta(hours=24)
-
-    incidents = db.query(Incident).filter(
-        Incident.timestamp >= last_24_hours
-    ).order_by(Incident.timestamp.desc()).all()
-
-    return incidents
+    return db.query(Incident).order_by(Incident.timestamp.desc()).all()
 
 
-# -----------------------------
-# SOS
-# -----------------------------
 @app.post("/sos")
 def trigger_sos(data: SOSRequest, db: Session = Depends(get_db)):
-
-    sos = SOS(
-        name=data.name,
-        contact=data.contact,
-        lat=data.lat,
-        lng=data.lng,
-        timestamp=datetime.utcnow()
-    )
-
+    sos = SOS(**data.dict(), timestamp=datetime.utcnow())
     db.add(sos)
     db.commit()
+    return {"message": "SOS recorded"}
 
-    return {"message": "SOS received successfully"}
 
-
-# -----------------------------
-# QUICK ACTIONS (Drone / Aid / etc)
-# -----------------------------
 @app.post("/action")
 def trigger_action(data: ActionRequest, db: Session = Depends(get_db)):
-
     action = Action(
         action_type=data.type,
         lat=data.lat,
         lng=data.lng,
         timestamp=datetime.utcnow()
     )
-
     db.add(action)
     db.commit()
+    return {"message": f"{data.type} executed"}
 
-    return {"message": f"{data.type.capitalize()} deployed successfully"}
+
+@app.post("/monitor")
+def add_monitor(data: MonitorRequest, db: Session = Depends(get_db)):
+    location = MonitoredLocation(**data.dict(), timestamp=datetime.utcnow())
+    db.add(location)
+    db.commit()
+    return {"message": "Location added"}
 
 
-# -----------------------------
-# DANGER ZONE CHECK
-# -----------------------------
-@app.get("/is-user-in-danger")
-def is_user_in_danger(lat: float, lng: float, db: Session = Depends(get_db)):
+@app.get("/monitor")
+def get_monitors(db: Session = Depends(get_db)):
+    monitors = db.query(MonitoredLocation).all()
+    incidents = db.query(Incident).all()
 
-    recent_incidents = db.query(Incident).order_by(
-        Incident.timestamp.desc()
-    ).limit(20).all()
+    result = []
 
-    for incident in recent_incidents:
+    for m in monitors:
+        risk = "LOW"
+        for i in incidents:
+            distance = math.sqrt((i.lat - m.lat)**2 + (i.lng - m.lng)**2)
+            if distance < 0.1 and i.severity >= 7:
+                risk = "HIGH"
 
-        # Rough distance calculation (~km)
-        distance = math.sqrt(
-            (incident.lat - lat) ** 2 +
-            (incident.lng - lng) ** 2
-        )
+        result.append({
+            "id": m.id,
+            "name": m.name,
+            "lat": m.lat,
+            "lng": m.lng,
+            "risk": risk
+        })
 
-        # 0.05 ≈ ~5km radius approx
-        if distance < 0.05 and incident.severity >= 7:
-            return {
-                "in_danger": True,
-                "severity": incident.risk_level
-            }
+    return result
 
-    return {"in_danger": False}
+
+@app.delete("/clear")
+def clear(db: Session = Depends(get_db)):
+    db.query(Incident).delete()
+    db.query(SOS).delete()
+    db.query(Action).delete()
+    db.query(MonitoredLocation).delete()
+    db.commit()
+    return {"message": "Database cleared"}
