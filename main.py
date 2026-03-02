@@ -1,19 +1,19 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
-from models import Base, Incident, SOS
+from models import Base, Incident, SOS, Action
 from gemini_service import classify_incident
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+import math
 
 # Create tables
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="disAIster Backend")
 
-# Enable CORS for frontend connection
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -50,8 +50,14 @@ class SOSRequest(BaseModel):
     lng: float
 
 
+class ActionRequest(BaseModel):
+    type: str
+    lat: float
+    lng: float
+
+
 # -----------------------------
-# ROOT TEST
+# ROOT
 # -----------------------------
 @app.get("/")
 def root():
@@ -59,7 +65,7 @@ def root():
 
 
 # -----------------------------
-# AI ANALYSIS ENDPOINT
+# AI ANALYSIS
 # -----------------------------
 @app.post("/analyze")
 def analyze_incident(data: IncidentRequest, db: Session = Depends(get_db)):
@@ -87,15 +93,22 @@ def analyze_incident(data: IncidentRequest, db: Session = Depends(get_db)):
 
 
 # -----------------------------
-# GET ALL INCIDENTS
+# GET RECENT INCIDENTS (Last 24 Hours)
 # -----------------------------
 @app.get("/incidents")
 def get_incidents(db: Session = Depends(get_db)):
-    return db.query(Incident).order_by(Incident.timestamp.desc()).all()
+
+    last_24_hours = datetime.utcnow() - timedelta(hours=24)
+
+    incidents = db.query(Incident).filter(
+        Incident.timestamp >= last_24_hours
+    ).order_by(Incident.timestamp.desc()).all()
+
+    return incidents
 
 
 # -----------------------------
-# SOS ENDPOINT
+# SOS
 # -----------------------------
 @app.post("/sos")
 def trigger_sos(data: SOSRequest, db: Session = Depends(get_db)):
@@ -115,6 +128,25 @@ def trigger_sos(data: SOSRequest, db: Session = Depends(get_db)):
 
 
 # -----------------------------
+# QUICK ACTIONS (Drone / Aid / etc)
+# -----------------------------
+@app.post("/action")
+def trigger_action(data: ActionRequest, db: Session = Depends(get_db)):
+
+    action = Action(
+        action_type=data.type,
+        lat=data.lat,
+        lng=data.lng,
+        timestamp=datetime.utcnow()
+    )
+
+    db.add(action)
+    db.commit()
+
+    return {"message": f"{data.type.capitalize()} deployed successfully"}
+
+
+# -----------------------------
 # DANGER ZONE CHECK
 # -----------------------------
 @app.get("/is-user-in-danger")
@@ -125,7 +157,14 @@ def is_user_in_danger(lat: float, lng: float, db: Session = Depends(get_db)):
     ).limit(20).all()
 
     for incident in recent_incidents:
-        distance = ((incident.lat - lat) ** 2 + (incident.lng - lng) ** 2) ** 0.5
+
+        # Rough distance calculation (~km)
+        distance = math.sqrt(
+            (incident.lat - lat) ** 2 +
+            (incident.lng - lng) ** 2
+        )
+
+        # 0.05 ≈ ~5km radius approx
         if distance < 0.05 and incident.severity >= 7:
             return {
                 "in_danger": True,
