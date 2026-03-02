@@ -2,15 +2,14 @@ from fastapi import FastAPI, Depends
 from sqlalchemy.orm import Session
 from database import SessionLocal, engine
 from models import Base, Incident, SOS
-from gemini_service import classify_incident
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import math
+import random
 
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+app = FastAPI(title="disAIster Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -38,63 +37,64 @@ class SOSRequest(BaseModel):
     lat: float
     lng: float
 
-class ActionRequest(BaseModel):
-    type: str
-    lat: float
-    lng: float
-
 @app.get("/")
 def root():
-    return {"status": "running"}
+    return {"status": "Backend running"}
 
 @app.post("/analyze")
-def analyze(data: IncidentRequest, db: Session = Depends(get_db)):
-    ai = classify_incident(data.message)
+def analyze_incident(data: IncidentRequest, db: Session = Depends(get_db)):
+
+    disaster_types = ["flood", "fire", "earthquake", "cyclone"]
+    disaster_type = random.choice(disaster_types)
+    severity = random.randint(4, 9)
+
+    risk_level = (
+        "HIGH" if severity >= 7 else
+        "MEDIUM" if severity >= 5 else
+        "LOW"
+    )
+
+    confidence = random.randint(70, 95)
 
     incident = Incident(
         message=data.message,
         lat=data.lat,
         lng=data.lng,
-        disaster_type=ai["disaster_type"],
-        severity=ai["severity"],
-        risk_level=ai["risk_level"],
-        confidence=ai["confidence"],
-        medical_needed=ai["medical_needed"],
-        satellite_verified=ai["satellite_verified"],
+        disaster_type=disaster_type,
+        severity=severity,
+        risk_level=risk_level,
+        confidence=confidence,
+        medical_needed="Yes" if severity >= 7 else "No",
+        satellite_verified=True,
         timestamp=datetime.utcnow()
     )
 
     db.add(incident)
     db.commit()
-    return ai
+
+    return {
+        "disaster_type": disaster_type,
+        "severity": severity,
+        "risk_level": risk_level,
+        "confidence": confidence
+    }
 
 @app.get("/incidents")
 def get_incidents(db: Session = Depends(get_db)):
     return db.query(Incident).order_by(Incident.timestamp.desc()).all()
 
 @app.post("/sos")
-def sos(data: SOSRequest, db: Session = Depends(get_db)):
-    db.add(SOS(
+def trigger_sos(data: SOSRequest, db: Session = Depends(get_db)):
+
+    sos = SOS(
         name=data.name,
         contact=data.contact,
         lat=data.lat,
         lng=data.lng,
         timestamp=datetime.utcnow()
-    ))
+    )
+
+    db.add(sos)
     db.commit()
+
     return {"message": "SOS received"}
-
-@app.post("/action")
-def action(data: ActionRequest):
-    return {"message": f"{data.type} initiated"}
-
-@app.get("/is-user-in-danger")
-def danger(lat: float, lng: float, db: Session = Depends(get_db)):
-    incidents = db.query(Incident).all()
-
-    for i in incidents:
-        dist = math.sqrt((i.lat - lat)**2 + (i.lng - lng)**2)
-        if dist < 0.05 and i.severity >= 7:
-            return {"in_danger": True}
-
-    return {"in_danger": False}
