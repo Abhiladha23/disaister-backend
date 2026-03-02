@@ -46,3 +46,19 @@ class SOS(Base):
     lng = Column(Float, nullable=False)
 
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+# -----------------------------
+# ACTION MODEL (Quick Actions)
+# -----------------------------
+class Action(Base):
+    __tablename__ = "actions"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    action_type = Column(String, nullable=False)  # drone, aid, evacuate, lockdown
+
+    lat = Column(Float, nullable=False)
+    lng = Column(Float, nullable=False)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
